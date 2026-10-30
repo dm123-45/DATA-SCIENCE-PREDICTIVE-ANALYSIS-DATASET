@@ -24,7 +24,7 @@ use_sample = st.sidebar.checkbox("Use sample dataset (Iris)", value=False)
 st.sidebar.markdown("---")
 st.sidebar.header("Plot options")
 plot_type = st.sidebar.selectbox("Plot type", ["Histogram", "Boxplot", "Scatter", "Correlation heatmap"])
-selected_cols = st.sidebar.multiselect("Columns (for plots)", [], help="Choose columns for plotting (will update once data loaded)")
+
 
 # --- Load data
 @st.cache_data
@@ -77,10 +77,13 @@ with col2:
 
 # --- Column selection helper
 numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+if df.empty:
+    st.warning("The dataset has no rows.")
+    st.stop()
+if not numeric_cols:
+    st.info("This dataset has no numeric columns. Preview, summary and export remain available.")
 all_cols = df.columns.tolist()
-if not selected_cols:
-    # sensible defaults
-    selected_cols = numeric_cols[:2] if len(numeric_cols) >= 2 else all_cols[:2]
+selected_cols = st.sidebar.multiselect("Columns for analysis", numeric_cols, default=numeric_cols[:2])
 
 # Update sidebar chosen list for clarity (will not re-render selection widget)
 st.sidebar.write("Detected numeric columns:", numeric_cols)
@@ -88,7 +91,9 @@ st.sidebar.write("Detected numeric columns:", numeric_cols)
 # --- Plots
 st.subheader("Visualisations")
 
-if plot_type == "Histogram":
+if not numeric_cols:
+    st.info("Numeric charts require at least one numeric column.")
+elif plot_type == "Histogram":
     col = st.selectbox("Choose numeric column", numeric_cols, index=0 if numeric_cols else 0)
     bins = st.slider("Bins", min_value=5, max_value=200, value=30)
     fig = px.histogram(df, x=col, nbins=bins, marginal="rug", title=f"Histogram of {col}")
@@ -106,7 +111,7 @@ elif plot_type == "Scatter":
         x_col = st.selectbox("X axis", numeric_cols, index=0)
         y_col = st.selectbox("Y axis", numeric_cols, index=1)
         color_col = st.selectbox("Color (optional)", [None] + all_cols, index=0)
-        fig = px.scatter(df, x=x_col, y=y_col, color=color_col, trendline="ols", title=f"{y_col} vs {x_col}")
+        fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title=f"{y_col} vs {x_col}")
         st.plotly_chart(fig, use_container_width=True)
 
 elif plot_type == "Correlation heatmap":
@@ -132,10 +137,10 @@ st.subheader("Filter & export cleaned dataset")
 filter_col = st.selectbox("Column to filter on (optional)", [None] + all_cols)
 filtered_df = df.copy()
 if filter_col:
-    unique_vals = df[filter_col].dropna().unique().tolist()
+    unique_vals = df[filter_col].dropna().astype(str).unique().tolist()[:250]
     sel = st.multiselect(f"Select values from {filter_col}", unique_vals, default=unique_vals[:1])
     if sel:
-        filtered_df = df[df[filter_col].isin(sel)]
+        filtered_df = df[df[filter_col].astype(str).isin(sel)]
         st.write(f"Filtered shape: {filtered_df.shape}")
     else:
         st.write("No values selected — no filtering applied.")
