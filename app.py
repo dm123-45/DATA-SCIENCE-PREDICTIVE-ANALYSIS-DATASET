@@ -1,159 +1,110 @@
-# app.py
-import streamlit as st
-import pandas as pd
-import numpy as np
+"""Interactive exploratory data analysis dashboard for CSV datasets."""
 import io
+import pandas as pd
 import plotly.express as px
-import plotly.figure_factory as ff
-import matplotlib.pyplot as plt
-import seaborn as sns
+import streamlit as st
 
-st.set_page_config(page_title="ILOOP — Data Analysis & Visualization", layout="wide")
+st.set_page_config(page_title="DataLab | Analytics Studio", page_icon="📊", layout="wide")
+st.markdown("""<style>
+.block-container{padding-top:2rem;max-width:1400px}
+[data-testid="stMetric"]{border:1px solid #dbe4ee;border-radius:14px;padding:14px;background:rgba(128,128,128,.04)}
+h1,h2,h3{letter-spacing:-.025em}
+</style>""", unsafe_allow_html=True)
+st.title("📊 DataLab")
+st.caption("Analytics Studio · Explore, visualise and export your datasets")
+with st.sidebar:
+    st.header("Workspace")
+    uploaded = st.file_uploader("Upload CSV", type=["csv"])
+    sample = st.toggle("Use Iris sample data", value=uploaded is None)
+    st.divider()
+    st.caption("Data is processed during this session. Avoid uploading sensitive information.")
 
-# --- Header
-st.title("ILOOP — Data Analysis & Visualization")
-st.write(
-    "Upload a CSV from the ILOOP project (or any CSV). "
-    "The app provides quick EDA (head, summary, missing values) and interactive visualisations."
-)
+@st.cache_data(show_spinner=False)
+def load_csv(data: bytes) -> pd.DataFrame:
+    return pd.read_csv(io.BytesIO(data))
 
-# --- Sidebar controls
-st.sidebar.header("Upload / Options")
-uploaded_file = st.sidebar.file_uploader("Upload a CSV file", type=["csv", "txt"])
-use_sample = st.sidebar.checkbox("Use sample dataset (Iris)", value=False)
-st.sidebar.markdown("---")
-st.sidebar.header("Plot options")
-plot_type = st.sidebar.selectbox("Plot type", ["Histogram", "Boxplot", "Scatter", "Correlation heatmap"])
-selected_cols = st.sidebar.multiselect("Columns (for plots)", [], help="Choose columns for plotting (will update once data loaded)")
-
-# --- Load data
-@st.cache_data
-def load_csv(file) -> pd.DataFrame:
-    return pd.read_csv(file)
-
-df = None
-if uploaded_file is not None:
+if uploaded is not None:
+    if uploaded.size > 20 * 1024 * 1024:
+        st.error("File exceeds the 20 MB limit.")
+        st.stop()
     try:
-        df = load_csv(uploaded_file)
-        st.success("CSV loaded successfully.")
-    except Exception as e:
-        st.error(f"Failed to read CSV: {e}")
-elif use_sample:
+        df = load_csv(uploaded.getvalue())
+    except (ValueError, UnicodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+        st.error(f"Unable to read CSV: {exc}")
+        st.stop()
+    source = uploaded.name
+elif sample:
     df = px.data.iris()
-    st.info("Loaded sample Iris dataset.")
-
-if df is None:
-    st.warning("Please upload a CSV or choose the sample dataset to begin.")
+    source = "Iris sample"
+else:
+    st.info("Upload a CSV or enable the sample dataset to begin.")
     st.stop()
 
-# --- Show basic info
-with st.expander("Dataset preview & basic info", expanded=True):
-    st.subheader("Preview")
-    st.dataframe(df.head(100))
+if not len(df.columns):
+    st.warning("No columns detected.")
+    st.stop()
+df.columns = [str(c) for c in df.columns]
+st.subheader(source)
+c1,c2,c3,c4 = st.columns(4)
+c1.metric("Rows", f"{len(df):,}")
+c2.metric("Columns", len(df.columns))
+c3.metric("Missing cells", f"{int(df.isna().sum().sum()):,}")
+numeric = df.select_dtypes(include="number").columns.tolist()
+c4.metric("Numeric features", len(numeric))
 
-    st.subheader("Basic info")
-    buffer = io.StringIO()
-    df.info(buf=buffer)
-    s = buffer.getvalue()
-    st.text(s)
+with st.expander("Data quality and column types", expanded=False):
+    quality = pd.DataFrame({"Type": df.dtypes.astype(str), "Missing": df.isna().sum(), "Unique": df.nunique(dropna=True)})
+    st.dataframe(quality, use_container_width=True)
 
-    st.write("Shape:", df.shape)
-    st.write("Columns:", list(df.columns))
+st.subheader("Explore your data")
+left,right = st.columns([1,2])
+with left:
+    filter_column = st.selectbox("Filter column", ["All columns"] + df.columns.tolist())
+    filtered = df.copy()
+    if filter_column != "All columns":
+        values = sorted(df[filter_column].dropna().astype(str).unique().tolist())[:500]
+        chosen = st.multiselect("Values", values)
+        if chosen:
+            filtered = df[df[filter_column].astype(str).isin(chosen)]
+    st.caption(f"{len(filtered):,} matching rows")
+with right:
+    st.dataframe(filtered.head(1000), use_container_width=True, hide_index=True)
+st.download_button("⬇ Download filtered CSV", filtered.to_csv(index=False).encode("utf-8"),
+                   "datalab_export.csv", "text/csv")
 
-# --- Summary statistics & missing values
-col1, col2 = st.columns([2, 1])
-with col1:
-    st.subheader("Summary statistics")
-    st.dataframe(df.describe(include='all').transpose())
-
-with col2:
-    st.subheader("Missing values")
-    missing = df.isnull().sum()
-    missing = missing[missing > 0].sort_values(ascending=False)
-    if missing.empty:
-        st.write("No missing values detected.")
+st.subheader("Visual analytics")
+if filtered.empty:
+    st.info("No matching rows. Change your filters.")
+elif not numeric:
+    st.info("No numeric columns detected. Data preview and export are still available.")
+else:
+    chart = st.selectbox("Chart", ["Histogram", "Box plot", "Scatter plot", "Correlation heatmap"])
+    if chart == "Histogram":
+        x = st.selectbox("Measure", numeric)
+        bins = st.slider("Bins", 5, 100, 25)
+        fig = px.histogram(filtered, x=x, nbins=bins, color_discrete_sequence=["#6366f1"])
+    elif chart == "Box plot":
+        x = st.selectbox("Measure", numeric)
+        fig = px.box(filtered, y=x, points="outliers", color_discrete_sequence=["#6366f1"])
+    elif chart == "Scatter plot":
+        if len(numeric) < 2:
+            st.info("Scatter plots require two numeric columns.")
+            fig = None
+        else:
+            x = st.selectbox("X axis", numeric)
+            y = st.selectbox("Y axis", numeric, index=1)
+            color = st.selectbox("Colour group", ["None"] + df.columns.tolist())
+            fig = px.scatter(filtered, x=x, y=y, color=None if color=="None" else color)
     else:
-        st.table(missing)
-
-# --- Column selection helper
-numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-all_cols = df.columns.tolist()
-if not selected_cols:
-    # sensible defaults
-    selected_cols = numeric_cols[:2] if len(numeric_cols) >= 2 else all_cols[:2]
-
-# Update sidebar chosen list for clarity (will not re-render selection widget)
-st.sidebar.write("Detected numeric columns:", numeric_cols)
-
-# --- Plots
-st.subheader("Visualisations")
-
-if plot_type == "Histogram":
-    col = st.selectbox("Choose numeric column", numeric_cols, index=0 if numeric_cols else 0)
-    bins = st.slider("Bins", min_value=5, max_value=200, value=30)
-    fig = px.histogram(df, x=col, nbins=bins, marginal="rug", title=f"Histogram of {col}")
-    st.plotly_chart(fig, use_container_width=True)
-
-elif plot_type == "Boxplot":
-    col = st.selectbox("Choose numeric column", numeric_cols, index=0 if numeric_cols else 0)
-    fig = px.box(df, y=col, points="all", title=f"Boxplot of {col}")
-    st.plotly_chart(fig, use_container_width=True)
-
-elif plot_type == "Scatter":
-    if len(numeric_cols) < 2:
-        st.info("Need at least two numeric columns for scatter plot.")
-    else:
-        x_col = st.selectbox("X axis", numeric_cols, index=0)
-        y_col = st.selectbox("Y axis", numeric_cols, index=1)
-        color_col = st.selectbox("Color (optional)", [None] + all_cols, index=0)
-        fig = px.scatter(df, x=x_col, y=y_col, color=color_col, trendline="ols", title=f"{y_col} vs {x_col}")
+        if len(numeric) < 2:
+            st.info("Correlation requires two numeric columns.")
+            fig = None
+        else:
+            fig = px.imshow(filtered[numeric].corr(), text_auto=".2f", aspect="auto",
+                            color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
+    if fig is not None:
+        fig.update_layout(template="plotly_white", margin=dict(l=20,r=20,t=30,b=20))
         st.plotly_chart(fig, use_container_width=True)
 
-elif plot_type == "Correlation heatmap":
-    if len(numeric_cols) < 2:
-        st.info("Need at least two numeric columns to compute correlations.")
-    else:
-        corr = df[numeric_cols].corr()
-        fig = px.imshow(corr, text_auto=True, aspect="auto", title="Correlation matrix (numeric columns)")
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- Pairwise / advanced view
-st.subheader("Advanced: Pairplot / Distribution matrix")
-if st.checkbox("Show pairplot (may be slow for large datasets)"):
-    pair_cols = st.multiselect("Choose columns for pairplot (numeric)", numeric_cols, default=numeric_cols[:4])
-    if len(pair_cols) >= 2:
-        fig = px.scatter_matrix(df, dimensions=pair_cols, title="Scatter matrix")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Select two or more numeric columns.")
-
-# --- Filtering & download cleaned data
-st.subheader("Filter & export cleaned dataset")
-filter_col = st.selectbox("Column to filter on (optional)", [None] + all_cols)
-filtered_df = df.copy()
-if filter_col:
-    unique_vals = df[filter_col].dropna().unique().tolist()
-    sel = st.multiselect(f"Select values from {filter_col}", unique_vals, default=unique_vals[:1])
-    if sel:
-        filtered_df = df[df[filter_col].isin(sel)]
-        st.write(f"Filtered shape: {filtered_df.shape}")
-    else:
-        st.write("No values selected — no filtering applied.")
-
-st.download_button(
-    label="Download filtered dataset as CSV",
-    data=filtered_df.to_csv(index=False).encode('utf-8'),
-    file_name="filtered_dataset.csv",
-    mime="text/csv",
-)
-
-# --- Notes & next steps
-st.markdown("---")
-st.subheader("Notes")
-st.write(
-    "• This app is a generic EDA & visualization scaffold tailored for the ILOOP data analysis + visualization workflow. "
-    "Replace or extend plotting sections with the specific plots or model outputs used in your notebook from ILOOP.pdf. "
-)
-st.write("• If you want, I can convert specific code cells from your `ILOOP.pdf` into Streamlit widgets/plots — tell me which sections to extract.")
-
-
+st.divider()
+st.caption("DataLab · Built with Streamlit, Pandas and Plotly · Exploratory analysis, not automated decision-making")
