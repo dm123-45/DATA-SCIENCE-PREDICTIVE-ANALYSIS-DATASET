@@ -1,8 +1,8 @@
 """Interactive exploratory data analysis dashboard for CSV datasets."""
-import io
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from data_utils import read_csv_bytes, filter_frame, numeric_columns
 
 st.set_page_config(page_title="DataLab | Analytics Studio", page_icon="📊", layout="wide")
 st.markdown("""<style>
@@ -15,13 +15,13 @@ st.caption("Analytics Studio · Explore, visualise and export your datasets")
 with st.sidebar:
     st.header("Workspace")
     uploaded = st.file_uploader("Upload CSV", type=["csv"])
-    sample = st.toggle("Use Iris sample data", value=uploaded is None)
+    sample = st.checkbox("Use Iris sample data", value=True)
     st.divider()
     st.caption("Data is processed during this session. Avoid uploading sensitive information.")
 
 @st.cache_data(show_spinner=False)
 def load_csv(data: bytes) -> pd.DataFrame:
-    return pd.read_csv(io.BytesIO(data))
+    return read_csv_bytes(data)
 
 if uploaded is not None:
     if uploaded.size > 20 * 1024 * 1024:
@@ -49,7 +49,7 @@ c1,c2,c3,c4 = st.columns(4)
 c1.metric("Rows", f"{len(df):,}")
 c2.metric("Columns", len(df.columns))
 c3.metric("Missing cells", f"{int(df.isna().sum().sum()):,}")
-numeric = df.select_dtypes(include="number").columns.tolist()
+numeric = numeric_columns(df)
 c4.metric("Numeric features", len(numeric))
 
 with st.expander("Data quality and column types", expanded=False):
@@ -59,13 +59,13 @@ with st.expander("Data quality and column types", expanded=False):
 st.subheader("Explore your data")
 left,right = st.columns([1,2])
 with left:
-    filter_column = st.selectbox("Filter column", ["All columns"] + df.columns.tolist())
+    filter_column = st.selectbox("Filter column", ["All columns"] + df.columns.tolist(), key="filter_column")
     filtered = df.copy()
     if filter_column != "All columns":
         values = sorted(df[filter_column].dropna().astype(str).unique().tolist())[:500]
         chosen = st.multiselect("Values", values)
         if chosen:
-            filtered = df[df[filter_column].astype(str).isin(chosen)]
+            filtered = filter_frame(df, filter_column, chosen)
     st.caption(f"{len(filtered):,} matching rows")
 with right:
     st.dataframe(filtered.head(1000), use_container_width=True, hide_index=True)
@@ -74,7 +74,7 @@ st.download_button("⬇ Download filtered CSV", filtered.to_csv(index=False).enc
 
 st.subheader("Visual analytics")
 if filtered.empty:
-    st.info("No matching rows. Change your filters.")
+    st.info("No matching rows. Change your filters or upload another dataset.")
 elif not numeric:
     st.info("No numeric columns detected. Data preview and export are still available.")
 else:
